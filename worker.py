@@ -10,10 +10,14 @@ NEXT_QUEUE_NAME = 'next_queue'
 
 logger = logging.getLogger(__name__)
 
-def setup_consumer(queue_name, callback):
+def setup_consumer(queue_name, callback, on_close):
 
     @defer.inlineCallbacks
     def run(connection):
+        d = defer.Deferred()
+        d.addErrback(on_close)
+        connection.ready = d
+
         channel = yield connection.channel()
         queue = yield channel.queue_declare(queue=queue_name)
         yield channel.basic_qos(prefetch_count=1)
@@ -34,10 +38,11 @@ def setup_consumer(queue_name, callback):
     d.addCallback(lambda protocol: protocol.ready)
     d.addCallback(run)
 
-def setup_publisher(queue_name, on_ready):
+def setup_publisher(queue_name, on_ready, on_close):
 
     @defer.inlineCallbacks
     def run(connection):
+        connection.add_on_close_callback(on_close)
         channel = yield connection.channel()
         queue = yield channel.queue_declare(queue=queue_name)
         yield on_ready(channel)
@@ -81,8 +86,8 @@ def retry(times, sleep, func, *args, **kwargs):
 class Worker(object):
 
     def run(self):
-        setup_publisher(NEXT_QUEUE_NAME, self.on_ready)
-        setup_consumer(PREV_QUEUE_NAME, self.on_consume)
+        setup_publisher(NEXT_QUEUE_NAME, self.on_ready, self.on_close)
+        setup_consumer(PREV_QUEUE_NAME, self.on_consume, self.on_close)
 
         reactor.run()
 
@@ -100,9 +105,11 @@ class Worker(object):
         logger.info('Ready!')
         self.next_channel = channel
 
+    def on_close(self, failure):
+        logger.error('Connection closed: %s' % failure)
+        reactor.stop()
+
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     worker = Worker()
     worker.run()
-
-    # TODO: Exit when connection is closed.
